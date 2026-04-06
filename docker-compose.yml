@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  pdf-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pdf-table-extractor
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount uploads directory to persist files
+      - ./uploads:/app/uploads
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # Optional: Set memory limit
+    # mem_limit: 4g
+    # Optional: Set CPU limit
+    # cpus: '2'
