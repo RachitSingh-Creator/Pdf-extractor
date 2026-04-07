@@ -247,22 +247,49 @@
         table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: auto;
         }
 
         th {
-            background-color: var(--gold);
             color: var(--navy);
-            padding: 15px;
+            padding: 12px 14px;
             text-align: center;
-            font-weight: 600;
+            font-weight: 700;
             font-size: 0.95rem;
+            vertical-align: middle;
+            border: 1px solid var(--border-gray);
         }
 
         td {
-            padding: 15px;
+            padding: 14px 12px;
             text-align: center;
             border: 1px solid var(--border-gray);
             font-size: 0.95rem;
+            color: var(--navy);
+            vertical-align: middle;
+            word-break: normal;
+            overflow-wrap: break-word;
+        }
+
+        .table-preview td.text-cell {
+            text-align: left;
+        }
+
+        .table-preview td.numeric-cell {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .table-preview th.empty-header,
+        .table-preview td.empty-cell {
+            background: transparent;
+        }
+
+        .table-preview td.section-row {
+            text-align: left;
+            font-weight: 700;
+            font-style: italic;
+            background: #f2efe3;
             color: var(--navy);
         }
 
@@ -500,7 +527,8 @@
                         table_number: tableIdx + 1,
                         rows: Array.isArray(table) ? table : table.rows,
                         header_row_count: Array.isArray(table) ? 1 : (table.header_row_count || 1),
-                        merges: Array.isArray(table) ? [] : (table.merges || [])
+                        merges: Array.isArray(table) ? [] : (table.merges || []),
+                        row_types: Array.isArray(table) ? [] : (table.row_types || [])
                     });
                 });
             });
@@ -527,10 +555,7 @@
                 html += `<div class="page-label">Page ${pageNumber}</div>`;
 
                 tables.forEach((table, tableIdx) => {
-                    const tableRows = Array.isArray(table) ? table : table.rows;
-                    const headerRowCount = Array.isArray(table) ? 1 : (table.header_row_count || 1);
-                    const headerRows = tableRows.slice(0, headerRowCount);
-                    const bodyRows = tableRows.slice(headerRowCount);
+                    const preview = buildPreviewTable(table);
 
                     html += `
                         <div class="table-container">
@@ -540,20 +565,12 @@
                                     ⬇ Download as Excel
                                 </button>
                             </div>
-                            <table>
+                            <table class="table-preview">
                                 <thead>
-                                    ${headerRows.map(row => `
-                                        <tr>
-                                            ${row.map(cell => `<th>${escapeHtml(cell || '')}</th>`).join('')}
-                                        </tr>
-                                    `).join('')}
+                                    ${renderHeaderRows(preview.headerRows)}
                                 </thead>
                                 <tbody>
-                                    ${bodyRows.map(row => `
-                                        <tr>
-                                            ${row.map(cell => `<td>${escapeHtml(cell || '')}</td>`).join('')}
-                                        </tr>
-                                    `).join('')}
+                                    ${renderBodyRows(preview.bodyRows, preview.bodyRowTypes)}
                                 </tbody>
                             </table>
                         </div>
@@ -579,7 +596,8 @@
                         table_number: tableIdx + 1,
                         rows: Array.isArray(table) ? table : table.rows,
                         header_row_count: Array.isArray(table) ? 1 : (table.header_row_count || 1),
-                        merges: Array.isArray(table) ? [] : (table.merges || [])
+                        merges: Array.isArray(table) ? [] : (table.merges || []),
+                        row_types: Array.isArray(table) ? [] : (table.row_types || [])
                     }))
                 );
 
@@ -644,7 +662,8 @@
                             table_number: tableIdx + 1,
                             rows: Array.isArray(table) ? table : table.rows,
                             header_row_count: Array.isArray(table) ? 1 : (table.header_row_count || 1),
-                            merges: Array.isArray(table) ? [] : (table.merges || [])
+                            merges: Array.isArray(table) ? [] : (table.merges || []),
+                            row_types: Array.isArray(table) ? [] : (table.row_types || [])
                         }],
                         filename: `page_${pageNumber}_table_${tableIdx + 1}.xlsx`
                     })
@@ -679,6 +698,243 @@
 
         function hideError() {
             errorMessage.classList.remove('active');
+        }
+
+        function buildPreviewTable(table) {
+            const rows = Array.isArray(table) ? table : table.rows;
+            const headerRowCount = Array.isArray(table) ? 1 : (table.header_row_count || 1);
+            const normalized = normalizePreviewRows(rows, headerRowCount);
+            const compactRows = normalized.rows;
+            const compactMerges = normalized.merges;
+            const rowTypes = Array.isArray(table) ? [] : (table.row_types || []);
+
+            return {
+                headerRows: applyHeaderMerges(compactRows.slice(0, headerRowCount), compactMerges),
+                bodyRows: compactRows.slice(headerRowCount),
+                bodyRowTypes: rowTypes.slice(headerRowCount)
+            };
+        }
+
+        function normalizePreviewRows(rows, headerRowCount) {
+            const bodyRows = rows.slice(headerRowCount);
+            const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+            const numericColumns = [];
+
+            for (let colIdx = 0; colIdx < columnCount; colIdx += 1) {
+                const values = bodyRows.map(row => (row[colIdx] || '').trim()).filter(Boolean);
+                if (values.length === 0) {
+                    continue;
+                }
+
+                const numericRatio = values.filter(isNumericValue).length / values.length;
+                if (numericRatio >= 0.55) {
+                    numericColumns.push(colIdx);
+                }
+            }
+
+            const firstNumericCol = numericColumns.length > 0 ? Math.min(...numericColumns) : columnCount;
+            const textColumns = [];
+            for (let colIdx = 0; colIdx < firstNumericCol; colIdx += 1) {
+                textColumns.push(colIdx);
+            }
+
+            if (textColumns.length <= 1) {
+                const visibleColumns = getVisibleColumns(rows, headerRowCount, columnCount);
+                return {
+                    rows: rows.map(row => visibleColumns.map(colIdx => row[colIdx] || '')),
+                    merges: []
+                };
+            }
+
+            const numberColumn = textColumns[0];
+            const organizationColumns = textColumns.slice(1);
+            const logicalColumns = [numberColumn, ...organizationColumns, ...numericColumns];
+
+            const normalizedRows = rows.map((row, rowIdx) => {
+                const logicalRow = [];
+
+                if (rowIdx < headerRowCount) {
+                    logicalRow.push((row[numberColumn] || '').trim());
+                    logicalRow.push(organizationColumns.map(colIdx => row[colIdx] || '').find(value => value.trim()) || '');
+                    numericColumns.forEach(colIdx => logicalRow.push(row[colIdx] || ''));
+                    return logicalRow;
+                }
+
+                const leadingValues = textColumns
+                    .map(colIdx => (row[colIdx] || '').trim())
+                    .filter(Boolean);
+
+                let rowNumber = '';
+                const organizationParts = [];
+
+                leadingValues.forEach(value => {
+                    if (!rowNumber) {
+                        const match = value.match(/^(\d{1,3})\s+(.+)$/);
+                        if (match) {
+                            rowNumber = match[1];
+                            if (match[2].trim()) {
+                                organizationParts.push(match[2].trim());
+                            }
+                            return;
+                        }
+                    }
+
+                    if (!rowNumber && /^\d{1,3}$/.test(value)) {
+                        rowNumber = value;
+                        return;
+                    }
+
+                    organizationParts.push(value);
+                });
+
+                logicalRow.push(rowNumber);
+                logicalRow.push(organizationParts.join(' '));
+                numericColumns.forEach(colIdx => logicalRow.push(row[colIdx] || ''));
+                return logicalRow;
+            });
+
+            const compactVisibleColumns = getVisibleColumns(
+                normalizedRows,
+                headerRowCount,
+                normalizedRows.reduce((max, row) => Math.max(max, row.length), 0)
+            );
+
+            return {
+                rows: normalizedRows.map(row => compactVisibleColumns.map(colIdx => row[colIdx] || '')),
+                merges: []
+            };
+        }
+
+        function getVisibleColumns(rows, headerRowCount, columnCount) {
+            const visible = [];
+            for (let colIdx = 0; colIdx < columnCount; colIdx += 1) {
+                const hasBodyValue = rows.slice(headerRowCount).some(row => (row[colIdx] || '').trim() !== '');
+                const hasHeaderValue = rows.slice(0, headerRowCount).some(row => (row[colIdx] || '').trim() !== '');
+                if (hasBodyValue || hasHeaderValue) {
+                    visible.push(colIdx);
+                }
+            }
+            return visible;
+        }
+
+        function remapMerges(merges, visibleColumns) {
+            const indexMap = new Map(visibleColumns.map((colIdx, newIdx) => [colIdx, newIdx]));
+            return merges.map(merge => {
+                const covered = [];
+                for (let colIdx = merge.start_col; colIdx <= merge.end_col; colIdx += 1) {
+                    if (indexMap.has(colIdx)) {
+                        covered.push(indexMap.get(colIdx));
+                    }
+                }
+
+                if (covered.length < 2) {
+                    return null;
+                }
+
+                return {
+                    row: merge.row,
+                    start_col: Math.min(...covered),
+                    end_col: Math.max(...covered)
+                };
+            }).filter(Boolean);
+        }
+
+        function applyHeaderMerges(headerRows, merges) {
+            return headerRows.map((row, rowIdx) => {
+                const mergeMap = new Map();
+                merges
+                    .filter(merge => merge.row === rowIdx)
+                    .forEach(merge => mergeMap.set(merge.start_col, merge.end_col));
+
+                const cells = [];
+                let colIdx = 0;
+                while (colIdx < row.length) {
+                    const mergeEnd = mergeMap.get(colIdx);
+                    if (mergeEnd !== undefined) {
+                        const mergedText = row.slice(colIdx, mergeEnd + 1).find(cell => (cell || '').trim() !== '') || '';
+                        cells.push({
+                            value: mergedText,
+                            colspan: (mergeEnd - colIdx) + 1
+                        });
+                        colIdx = mergeEnd + 1;
+                        continue;
+                    }
+
+                    cells.push({
+                        value: row[colIdx] || '',
+                        colspan: 1
+                    });
+                    colIdx += 1;
+                }
+                return cells;
+            });
+        }
+
+        function renderHeaderRows(headerRows) {
+            return headerRows.map(row => `
+                <tr>
+                    ${row.map(cell => `
+                        <th colspan="${cell.colspan}" class="${cell.value.trim() ? '' : 'empty-header'}">${escapeHtml(cell.value)}</th>
+                    `).join('')}
+                </tr>
+            `).join('');
+        }
+
+        function renderBodyRows(bodyRows, bodyRowTypes = []) {
+            const textColumnIndex = findPrimaryTextColumn(bodyRows);
+            return bodyRows.map((row, rowIdx) => {
+                if (bodyRowTypes[rowIdx] === 'section') {
+                    const sectionText = row.find(cell => (cell || '').trim()) || '';
+                    return `
+                        <tr>
+                            <td colspan="${Math.max(row.length, 1)}" class="section-row">${escapeHtml(sectionText)}</td>
+                        </tr>
+                    `;
+                }
+
+                return `
+                <tr>
+                    ${row.map((cell, colIdx) => {
+                        const value = cell || '';
+                        const classes = [];
+                        if (!value.trim()) {
+                            classes.push('empty-cell');
+                        } else if (colIdx === textColumnIndex) {
+                            classes.push('text-cell');
+                        } else if (isNumericValue(value)) {
+                            classes.push('numeric-cell');
+                        }
+                        return `<td class="${classes.join(' ')}">${escapeHtml(value)}</td>`;
+                    }).join('')}
+                </tr>
+            `;
+            }).join('');
+        }
+
+        function findPrimaryTextColumn(rows) {
+            let bestIndex = 0;
+            let bestScore = -1;
+
+            const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+            for (let colIdx = 0; colIdx < columnCount; colIdx += 1) {
+                const values = rows.map(row => (row[colIdx] || '').trim()).filter(Boolean);
+                if (values.length === 0) {
+                    continue;
+                }
+
+                const textScore = values.reduce((score, value) => score + (isNumericValue(value) ? 0 : value.length), 0);
+                if (textScore > bestScore) {
+                    bestScore = textScore;
+                    bestIndex = colIdx;
+                }
+            }
+
+            return bestIndex;
+        }
+
+        function isNumericValue(value) {
+            const compact = value.replace(/,/g, '').replace(/%/g, '').replace(/[()]/g, '').trim();
+            return compact !== '' && /^[-+]?\d+(\.\d+)?$/.test(compact);
         }
 
         function escapeHtml(text) {
