@@ -1,0 +1,57 @@
+{
+  "files": [
+    {
+      "pdf": "uploads/Load_PO_Trading-converted-_Summary_Mar_2026.pdf",
+      "expectations": [
+        {
+          "page": 1,
+          "table": 1,
+          "column_count": 6,
+          "header_row": ["No.", "Participating Organisation", "Unit", "%", "RM", "%"],
+          "contains_row_fragment": ["MAYBANK INVESTMENT BANK BERHAD", "14,812,209,370"]
+        }
+      ]
+    },
+    {
+      "pdf": "uploads/sample-tables.pdf",
+      "expectations": [
+        {
+          "page": 2,
+          "table": 1,
+          "column_count": 2,
+          "header_row": ["Role", "Actor"],
+          "contains_row_fragment": ["Main character", "Daniel Radcliffe"]
+        },
+        {
+          "page": 3,
+          "table": 3,
+          "column_count": 8,
+          "header_row_contains": ["Rainfall (inches)", "Americas", "Asia"],
+          "contains_row_fragment": ["Average", "133", "244"]
+        }
+      ]
+    },
+    {
+      "pdf": "uploads/4444444444.pdf",
+      "expectations": [
+        {
+          "page": 2,
+          "table": 1,
+          "column_count": 2,
+          "header_row_contains": ["Role", "Actor"]
+        }
+      ]
+    },
+    {
+      "pdf": "uploads/131313.pdf",
+      "expectations": [
+        {
+          "page": 2,
+          "table": 1,
+          "column_count": 6,
+          "header_row": ["No.", "Participating Organisation", "Unit", "%", "RM", "%"]
+        }
+      ]
+    }
+  ]
+}

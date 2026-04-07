@@ -18,6 +18,8 @@ import traceback
 import threading
 import re
 import time
+import os
+import json
 
 # PDF and image processing
 from pdf2image import convert_from_path
@@ -143,6 +145,13 @@ class TableDetector:
         self.y_threshold = y_threshold
         self.x_threshold = x_threshold
         self.table_gap_multiplier = table_gap_multiplier
+        self.debug_snapshots = []
+
+    def _record_debug(self, stage, payload):
+        self.debug_snapshots.append({
+            "stage": stage,
+            "payload": payload,
+        })
 
     def _extract_items(self, ocr_result):
         items = []
@@ -831,6 +840,7 @@ class TableDetector:
         if not rows:
             return rows
 
+        rows = self._merge_continuation_rows(rows)
         consolidated = []
         current = None
 
@@ -1147,6 +1157,10 @@ class TableDetector:
 
         ocr_result = normalize_ocr_result(ocr_instance.ocr(image_np, cls=True))
         items = self._remove_artifact_items(self._extract_items(ocr_result))
+        self._record_debug("ocr_items", {
+            "count": len(items),
+            "sample": items[:20],
+        })
         if not items:
             return []
 
@@ -1169,9 +1183,13 @@ class TableDetector:
                     region_tables.append(table)
 
         page_tables = self._build_table_from_row_grid(items)
+        self._record_debug("page_row_grid", page_tables)
         structured_tables = self._extract_structured_tables(items)
+        self._record_debug("structured_tables", structured_tables)
         fallback_tables = self._detect_tables_fallback(items)
+        self._record_debug("fallback_tables", fallback_tables)
         selected_tables = self._select_best_tables(region_tables, page_tables, structured_tables, fallback_tables)
+        self._record_debug("selected_tables", selected_tables)
         return self._normalize_selected_tables(selected_tables)
 
     def _infer_table_x_bounds(self, anchors, metric_columns):
@@ -1492,6 +1510,74 @@ class TableDetector:
         compacted_body = [self._compact_body_row(row, layout) for row in body_rows]
         return compacted_headers, compacted_body
 
+    def _row_numeric_cells(self, row):
+        return sum(1 for value in row if isinstance(value, str) and value.strip() and self._looks_numeric(value))
+
+    def _row_text_cells(self, row):
+        return [
+            (idx, value.strip())
+            for idx, value in enumerate(row)
+            if isinstance(value, str) and value.strip() and not self._looks_numeric(value)
+        ]
+
+    def _row_missing_primary_text(self, row, layout):
+        text_indexes = range(layout["first_numeric_col"]) if layout else range(len(row))
+        for idx in text_indexes:
+            if idx >= len(row):
+                continue
+            value = row[idx].strip()
+            if value and not self._looks_numeric(value):
+                return False
+        return True
+
+    def _merge_text_row_into_target(self, target_row, text_row, layout, prepend=False):
+        merged = list(target_row)
+        text_cells = self._row_text_cells(text_row)
+        if not text_cells:
+            return merged
+
+        target_idx = layout["organization_col"] if layout else text_cells[0][0]
+        if target_idx >= len(merged):
+            merged.extend([""] * (target_idx + 1 - len(merged)))
+
+        incoming = " ".join(value for _, value in text_cells).strip()
+        existing = merged[target_idx].strip()
+        if prepend:
+            merged[target_idx] = f"{incoming} {existing}".strip() if existing else incoming
+        else:
+            merged[target_idx] = f"{existing} {incoming}".strip() if existing else incoming
+        return merged
+
+    def _merge_continuation_rows(self, rows, layout=None):
+        if not rows:
+            return rows
+
+        merged_rows = []
+        pending_rows = [list(row) for row in rows]
+        idx = 0
+
+        while idx < len(pending_rows):
+            row = pending_rows[idx]
+            is_text_only_sparse = self._is_section_like_row(row) and self._row_numeric_cells(row) == 0
+            previous_row = merged_rows[-1] if merged_rows else None
+            next_row = pending_rows[idx + 1] if idx + 1 < len(pending_rows) else None
+
+            if is_text_only_sparse:
+                if previous_row and self._row_numeric_cells(previous_row) >= 2 and self._row_missing_primary_text(previous_row, layout):
+                    merged_rows[-1] = self._merge_text_row_into_target(previous_row, row, layout, prepend=False)
+                    idx += 1
+                    continue
+
+                if next_row and self._row_numeric_cells(next_row) >= 2 and self._row_missing_primary_text(next_row, layout):
+                    pending_rows[idx + 1] = self._merge_text_row_into_target(next_row, row, layout, prepend=True)
+                    idx += 1
+                    continue
+
+            merged_rows.append(row)
+            idx += 1
+
+        return merged_rows
+
     def _normalize_selected_table(self, table):
         if not isinstance(table, dict):
             return table
@@ -1612,6 +1698,7 @@ class TableDetector:
         if not layout:
             return body_rows
 
+        body_rows = self._merge_continuation_rows(body_rows, layout)
         consolidated = []
         current_group = []
         current_group_has_numeric = False
@@ -1862,6 +1949,17 @@ def _merge_continued_page_tables(pages):
     return pages
 
 
+def _write_debug_payload(filename, payload):
+    debug_dir = os.getenv("PDF_EXTRACT_DEBUG_DIR", "").strip()
+    if not debug_dir:
+        return
+
+    target_dir = Path(debug_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / filename
+    target_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _integer_like_text(value):
     compact = value.replace(",", "").strip()
     return bool(compact) and compact.isdigit()
@@ -2107,14 +2205,21 @@ async def upload_pdf(file: UploadFile = File(...)):
             image_np = np.array(image)
             
             tables = detector.detect_tables_from_image(image_np, ocr_instance)
+            _write_debug_payload(
+                f"{Path(file.filename).stem}_page_{page_num}.json",
+                {
+                    "page_number": page_num,
+                    "tables": tables,
+                    "debug_snapshots": detector.debug_snapshots,
+                },
+            )
+            detector.debug_snapshots = []
             
             pages_data.append({
                 "page_number": page_num,
                 "tables": tables
             })
         
-        pages_data = _merge_continued_page_tables(pages_data)
-
         return {
             "status": "success",
             "pages": pages_data
